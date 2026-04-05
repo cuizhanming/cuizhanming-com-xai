@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+
+# uv
+.uv/
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.mp4
+*.mov
+*.avi
+
+# Claude local settings (contains machine-specific tool permissions)
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
