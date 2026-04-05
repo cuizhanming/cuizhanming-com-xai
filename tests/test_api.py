@@ -80,13 +80,16 @@ async def test_generate_video_400_raises_validation_error() -> None:
 
 
 @respx.mock
-async def test_generate_video_429_raises_rate_limit_error() -> None:
+async def test_generate_video_429_retries_and_raises_rate_limit_error() -> None:
+    """generate_video retries up to 3 times on 429 before raising XAIRateLimitError."""
     respx.post(GENERATE_URL).mock(
         return_value=httpx.Response(429, text="Too Many Requests")
     )
-    async with _client() as client:
-        with pytest.raises(XAIRateLimitError):
-            await client.generate_video(prompt="test")
+    with patch("xai_cli.api.asyncio.sleep", new_callable=AsyncMock):
+        async with _client() as client:
+            with pytest.raises(XAIRateLimitError):
+                await client.generate_video(prompt="test")
+    assert respx.calls.call_count == 3
 
 
 @respx.mock

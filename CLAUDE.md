@@ -4,11 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Goal
 
-CLI application integrating with xAI APIs. Phase 1: video generation via the xAI video generation API.
+CLI application integrating with xAI APIs.
+
+- Phase 1 (done): video generation
+- Phase 2 (done): image generation (`xai image generate`)
+- Phase 3 (done): image batch generation (`xai image batch`)
+- Phase 4 (done): image editing / image-to-image (`xai image edit`)
 
 ## xAI API Reference
 
-- Video generation docs: https://docs.x.ai/developers/model-capabilities/video/generation
+- Video generation: https://docs.x.ai/developers/model-capabilities/video/generation
+- Image generation & editing: https://docs.x.ai/developers/model-capabilities/images/generation
+- Batch API: https://docs.x.ai/developers/advanced-api-usage/batch-api
+- Rate limits: https://docs.x.ai/developers/rate-limits
 - Base URL: `https://api.x.ai/v1`
 - Auth: `Authorization: Bearer $XAI_API_KEY`
 
@@ -91,3 +99,11 @@ Good agent team use cases for this project:
 | `principal-sre` | Packaging, CI/CD, PyPI release, versioning |
 
 The `orchestrator` agent definition is available for `claude --agent orchestrator` sessions where it runs as the main thread and can dispatch sub-agents via the `Agent` tool.
+
+---
+
+## End of Conversation
+
+After every conversation that adds or changes features, always:
+1. Update `README.md` to reflect new commands, usage examples, and feature scope
+2. Update `CLAUDE.md` if project goals, API references, or agent routing have changed

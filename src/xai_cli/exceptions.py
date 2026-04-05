@@ -31,3 +31,30 @@ class VideoGenerationTimeoutError(XAIError):
         )
         self.request_id = request_id
         self.timeout_seconds = timeout_seconds
+
+
+class ImageGenerationError(XAIError):
+    def __init__(self, message: str, payload: dict | None = None) -> None:
+        super().__init__(message)
+        self.payload = payload or {}
+
+
+class ImageBatchError(XAIError):
+    def __init__(self, message: str, payload: dict | None = None) -> None:
+        super().__init__(message)
+        self.payload = payload or {}
+
+
+class ImageBatchTimeoutError(XAIError):
+    def __init__(self, batch_id: str, timeout_seconds: float) -> None:
+        super().__init__(
+            f"Batch polling timed out after {timeout_seconds}s for batch_id={batch_id}"
+        )
+        self.batch_id = batch_id
+        self.timeout_seconds = timeout_seconds
+
+
+class ImageEditError(XAIError):
+    def __init__(self, message: str, payload: dict | None = None) -> None:
+        super().__init__(message)
+        self.payload = payload or {}
