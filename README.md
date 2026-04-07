@@ -83,6 +83,11 @@ xai image batch submit "a red apple" "a blue ocean" --wait
 ```
 
 ```bash
+# Wait and download results in one shot
+xai image batch submit "a red apple" "a blue ocean" --save-dir ./images
+```
+
+```bash
 # Check status
 xai image batch status batch-xyz
 ```
@@ -103,6 +108,32 @@ xai image batch results batch-xyz
 # Or download all images
 xai image batch results batch-xyz --save-dir ./images
 ```
+
+### Batch image editing (folder → batch edit)
+
+Apply a prompt to every image in a folder via the batch API:
+
+```bash
+# Submit edit requests for all images in a folder
+xai image batch submit --image ~/photos "make it look like an oil painting"
+```
+
+```
+Batch ID: batch-xyz
+```
+
+```bash
+# Submit and download all edited images when done
+xai image batch submit --image ~/photos "make it look like an oil painting" --save-dir ./edited
+```
+
+Supply one prompt per image to use different prompts for each:
+
+```bash
+xai image batch submit --image ~/photos "warm tones" "cool tones" "black and white"
+```
+
+Optional flags: `--aspect-ratio`, `--name`, `--wait`, `--save-dir`, `--output text|json`.
 
 ---
 

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Callable
 
 import httpx
@@ -214,13 +215,11 @@ class XAIClient:
         return data
 
     async def create_image_batch(self, name: str | None = None) -> str:
-        body: dict = {}
-        if name is not None:
-            body["name"] = name
+        body: dict = {"name": name if name is not None else f"batch-{int(time.time())}"}
         resp = await self._request_with_server_retry("POST", "/batches", json=body)
         self._raise_for_status(resp)
         data = resp.json()
-        return data["id"]
+        return data["batch_id"]
 
     async def add_image_batch_request(
         self,
@@ -231,24 +230,38 @@ class XAIClient:
         n: int = 1,
         aspect_ratio: str | None = None,
         resolution: str | None = None,
+        image: str | None = None,
     ) -> None:
-        generations: dict = {
-            "model": model,
-            "prompt": prompt,
-            "n": n,
-        }
-        if aspect_ratio is not None:
-            generations["aspect_ratio"] = aspect_ratio
-        if resolution is not None:
-            generations["resolution"] = resolution
+        if image is not None:
+            operation: dict = {
+                "image_edit": {
+                    "model": model,
+                    "prompt": prompt,
+                    "image": {"type": "image_url", "url": image},
+                }
+            }
+            if aspect_ratio is not None:
+                operation["image_edit"]["aspect_ratio"] = aspect_ratio
+        else:
+            operation = {
+                "image_generation": {
+                    "model": model,
+                    "prompt": prompt,
+                    "n": n,
+                }
+            }
+            if aspect_ratio is not None:
+                operation["image_generation"]["aspect_ratio"] = aspect_ratio
+            if resolution is not None:
+                operation["image_generation"]["resolution"] = resolution
 
         body = {
-            "batch_request_id": batch_request_id,
-            "batch_request": {
-                "images": {
-                    "generations": generations,
+            "batch_requests": [
+                {
+                    "batch_request_id": batch_request_id,
+                    "batch_request": operation,
                 }
-            },
+            ]
         }
         resp = await self._request_with_server_retry(
             "POST", f"/batches/{batch_id}/requests", json=body
@@ -281,10 +294,12 @@ class XAIClient:
             self._raise_for_status(resp)
             data = resp.json()
 
-            if on_status is not None:
-                on_status(data)
+            state = data.get("state", data)
 
-            if data["num_pending"] == 0:
+            if on_status is not None:
+                on_status(state)
+
+            if state.get("num_pending", 1) == 0:
                 return data
 
             await asyncio.sleep(delay)
@@ -293,10 +308,10 @@ class XAIClient:
 
         raise ImageBatchTimeoutError(batch_id=batch_id, timeout_seconds=timeout_seconds)
 
-    async def get_batch_results(self, batch_id: str, after: str | None = None) -> dict:
+    async def get_batch_results(self, batch_id: str, pagination_token: str | None = None) -> dict:
         url = f"/batches/{batch_id}/results"
-        if after is not None:
-            url = f"{url}?after={after}"
+        if pagination_token is not None:
+            url = f"{url}?pagination_token={pagination_token}"
         resp = await self._get_with_server_retry(url)
         self._raise_for_status(resp)
         return resp.json()

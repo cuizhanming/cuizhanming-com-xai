@@ -10,6 +10,7 @@ CLI application integrating with xAI APIs.
 - Phase 2 (done): image generation (`xai image generate`)
 - Phase 3 (done): image batch generation (`xai image batch`)
 - Phase 4 (done): image editing / image-to-image (`xai image edit`)
+- Phase 5 (done): batch image editing (`xai image batch submit --image <folder>`)
 
 ## xAI API Reference
 

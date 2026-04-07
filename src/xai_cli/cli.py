@@ -630,17 +630,49 @@ def config_show() -> None:
 @batch_app.command("submit")
 def image_batch_submit(
     prompts: list[str] = typer.Argument(..., help="One or more text prompts"),
+    image: Optional[str] = typer.Option(None, "--image", help="Folder of images to edit (image-to-image batch)"),
     aspect_ratio: Optional[str] = typer.Option(None, "--aspect-ratio", help="e.g. 16:9, 1:1"),
-    resolution: Optional[str] = typer.Option(None, "--resolution", help="1k or 2k"),
+    resolution: Optional[str] = typer.Option(None, "--resolution", help="1k or 2k (generation only)"),
     name: Optional[str] = typer.Option(None, "--name", help="Optional batch name"),
     wait: bool = typer.Option(False, "--wait", help="Poll until batch completes"),
+    save_dir: Optional[str] = typer.Option(None, "--save-dir", help="Download results to this folder (implies --wait)"),
     output: Optional[str] = typer.Option(None, "--output", help="Output format: text or json"),
     api_key: Optional[str] = typer.Option(None, "--api-key", envvar="XAI_API_KEY"),
 ) -> None:
-    """Submit a batch of image generation requests."""
+    """Submit a batch of image generation or editing requests.
+
+    Pass --image with a folder to run image-to-image edits on every file inside.
+    A single prompt is applied to all images, or supply one prompt per image.
+    """
     resolved_key = load_api_key(api_key)
     out_format = _resolve_output(output)
     err_console = _stderr_console()
+
+    # Resolve image sources when --image folder is given
+    image_paths: list[Path] = []
+    if image is not None:
+        try:
+            image_paths = _collect_image_paths(image)
+        except ValueError as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1)
+        if not image_paths:
+            typer.echo("Error: no images found in the specified folder", err=True)
+            raise typer.Exit(1)
+        # Expand prompts: single prompt broadcasts to all images; else must match count
+        if len(prompts) == 1:
+            prompts = prompts * len(image_paths)
+        elif len(prompts) != len(image_paths):
+            typer.echo(
+                f"Error: {len(prompts)} prompts given but {len(image_paths)} images found — "
+                "supply exactly one prompt (applied to all) or one per image",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+    # --save-dir implies --wait
+    if save_dir is not None:
+        wait = True
 
     batch_id: str = ""
     final: dict = {}
@@ -651,14 +683,33 @@ def image_batch_submit(
         nonlocal batch_id, final
         async with XAIClient(resolved_key) as client:
             batch_id = await client.create_image_batch(name)
-            for i, prompt in enumerate(prompts):
-                await client.add_image_batch_request(
-                    batch_id,
-                    batch_request_id=f"req-{i}",
-                    prompt=prompt,
-                    aspect_ratio=aspect_ratio,
-                    resolution=resolution,
-                )
+
+            if image_paths:
+                # Edit mode: encode each image and submit edit requests
+                for i, (img_path, prompt) in enumerate(zip(image_paths, prompts)):
+                    try:
+                        img_data = prepare_image_input(str(img_path))
+                    except (ValueError, FileNotFoundError, PermissionError) as exc:
+                        typer.echo(f"Error reading {img_path}: {exc}", err=True)
+                        raise typer.Exit(1)
+                    await client.add_image_batch_request(
+                        batch_id,
+                        batch_request_id=f"req-{i}",
+                        prompt=prompt,
+                        aspect_ratio=aspect_ratio,
+                        image=img_data,
+                    )
+            else:
+                # Generation mode
+                for i, prompt in enumerate(prompts):
+                    await client.add_image_batch_request(
+                        batch_id,
+                        batch_request_id=f"req-{i}",
+                        prompt=prompt,
+                        aspect_ratio=aspect_ratio,
+                        resolution=resolution,
+                    )
+
             if wait:
                 spinner_status = err_console.status("Waiting for batch...") if use_spinner else None
 
@@ -686,29 +737,98 @@ def image_batch_submit(
         typer.echo(str(exc), err=True)
         raise typer.Exit(2)
 
+    num_requests = len(image_paths) if image_paths else len(prompts)
+
     if not wait:
         if out_format == "json":
-            typer.echo(json.dumps({"batch_id": batch_id, "num_requests": len(prompts)}))
+            typer.echo(json.dumps({"batch_id": batch_id, "num_requests": num_requests}))
         else:
             typer.echo(f"Batch ID: {batch_id}")
-    else:
+        return
+
+    # --wait or --save-dir: report completion then optionally download
+    if out_format == "json" and save_dir is None:
+        typer.echo(
+            json.dumps(
+                {
+                    "batch_id": batch_id,
+                    "status": "complete",
+                    "num_success": final.get("state", final).get("num_success", 0),
+                    "num_error": final.get("state", final).get("num_error", 0),
+                }
+            )
+        )
+        return
+
+    if out_format != "json":
+        state = final.get("state", final)
+        typer.echo(
+            f"Batch {batch_id} complete: "
+            f"{state.get('num_success', 0)} succeeded, "
+            f"{state.get('num_error', 0)} failed"
+        )
+
+    if save_dir is not None:
+        # Fetch results and download images
+        all_results: list[dict] = []
+
+        async def _fetch_results() -> None:
+            async with XAIClient(resolved_key) as client:
+                pagination_token: Optional[str] = None
+                while True:
+                    page = await client.get_batch_results(batch_id, pagination_token=pagination_token)
+                    all_results.extend(page.get("results", []))
+                    pagination_token = page.get("pagination_token")
+                    if not pagination_token:
+                        break
+
+        try:
+            asyncio.run(_fetch_results())
+        except Exception as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(2)
+
+        succeeded = [r for r in all_results if "batch_result" in r]
+        dest_dir = Path(save_dir)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        saved_paths: list[str] = []
+
+        for r in succeeded:
+            req_id = r["batch_request_id"]
+            url = r["batch_result"]["response"]["image_generation"]["data"][0]["url"]
+            # Use original filename stem when editing a folder
+            if image_paths:
+                idx = int(req_id.split("-", 1)[1])
+                stem = image_paths[idx].stem if idx < len(image_paths) else req_id
+            else:
+                stem = req_id
+            dest = dest_dir / f"{stem}.png"
+            dl_status = err_console.status(f"Downloading {dest.name}...") if use_spinner else None
+            try:
+                if dl_status:
+                    with dl_status:
+                        response = httpx.get(url, follow_redirects=True)
+                        response.raise_for_status()
+                        dest.write_bytes(response.content)
+                else:
+                    response = httpx.get(url, follow_redirects=True)
+                    response.raise_for_status()
+                    dest.write_bytes(response.content)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    typer.echo(f"Skipped {req_id} (moderated or unavailable)", err=True)
+                    continue
+                typer.echo(f"Network error downloading {req_id}: {exc}", err=True)
+                raise typer.Exit(2)
+            except httpx.HTTPError as exc:
+                typer.echo(f"Network error downloading {req_id}: {exc}", err=True)
+                raise typer.Exit(2)
+            saved_paths.append(str(dest))
+            if out_format != "json":
+                typer.echo(f"Saved to {dest}")
+
         if out_format == "json":
-            typer.echo(
-                json.dumps(
-                    {
-                        "batch_id": batch_id,
-                        "status": "complete",
-                        "num_success": final.get("num_success", 0),
-                        "num_error": final.get("num_error", 0),
-                    }
-                )
-            )
-        else:
-            typer.echo(
-                f"Batch {batch_id} complete: "
-                f"{final.get('num_success', 0)} succeeded, "
-                f"{final.get('num_error', 0)} failed"
-            )
+            typer.echo(json.dumps({"batch_id": batch_id, "saved": saved_paths}))
 
 
 # ---------------------------------------------------------------------------
@@ -742,12 +862,13 @@ def image_batch_status(
     if out_format == "json":
         typer.echo(json.dumps(data))
     else:
-        typer.echo(f"Batch ID:    {data.get('id', batch_id)}")
-        typer.echo(f"Requests:    {data.get('num_requests', 0)}")
-        typer.echo(f"Pending:     {data.get('num_pending', 0)}")
-        typer.echo(f"Succeeded:   {data.get('num_success', 0)}")
-        typer.echo(f"Failed:      {data.get('num_error', 0)}")
-        typer.echo(f"Cancelled:   {data.get('num_cancelled', 0)}")
+        state = data.get("state", data)
+        typer.echo(f"Batch ID:    {data.get('batch_id', batch_id)}")
+        typer.echo(f"Requests:    {state.get('num_requests', 0)}")
+        typer.echo(f"Pending:     {state.get('num_pending', 0)}")
+        typer.echo(f"Succeeded:   {state.get('num_success', 0)}")
+        typer.echo(f"Failed:      {state.get('num_error', 0)}")
+        typer.echo(f"Cancelled:   {state.get('num_cancelled', 0)}")
 
 
 # ---------------------------------------------------------------------------
@@ -772,13 +893,13 @@ def image_batch_results(
     async def _run() -> None:
         nonlocal all_results
         async with XAIClient(resolved_key) as client:
-            after: Optional[str] = None
+            pagination_token: Optional[str] = None
             while True:
-                page = await client.get_batch_results(batch_id, after=after)
+                page = await client.get_batch_results(batch_id, pagination_token=pagination_token)
                 all_results.extend(page.get("results", []))
-                if not page.get("has_more", False):
+                pagination_token = page.get("pagination_token")
+                if not pagination_token:
                     break
-                after = page.get("last_id")
 
     try:
         asyncio.run(_run())
@@ -789,22 +910,24 @@ def image_batch_results(
         typer.echo(str(exc), err=True)
         raise typer.Exit(2)
 
-    succeeded = [r for r in all_results if r.get("status") == "succeeded"]
+    succeeded = [r for r in all_results if "batch_result" in r]
+
+    def _get_image_url(r: dict) -> str:
+        return r["batch_result"]["response"]["image_generation"]["data"][0]["url"]
 
     if save_dir is None:
         if out_format == "json":
             payload = [
                 {
                     "id": r["batch_request_id"],
-                    "url": r["result"]["data"][0]["url"],
+                    "url": _get_image_url(r),
                 }
                 for r in succeeded
             ]
             typer.echo(json.dumps({"results": payload}))
         else:
             for r in succeeded:
-                url = r["result"]["data"][0]["url"]
-                typer.echo(f"{r['batch_request_id']}: {url}")
+                typer.echo(f"{r['batch_request_id']}: {_get_image_url(r)}")
     else:
         dest_dir = Path(save_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -814,7 +937,7 @@ def image_batch_results(
 
         for r in succeeded:
             req_id = r["batch_request_id"]
-            url = r["result"]["data"][0]["url"]
+            url = _get_image_url(r)
             dest = dest_dir / f"{req_id}.png"
 
             dl_status = err_console.status(f"Downloading {req_id}.png...") if use_spinner else None
@@ -828,6 +951,12 @@ def image_batch_results(
                     response = httpx.get(url, follow_redirects=True)
                     response.raise_for_status()
                     dest.write_bytes(response.content)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    typer.echo(f"Skipped {req_id} (moderated or unavailable)", err=True)
+                    continue
+                typer.echo(f"Network error downloading {req_id}: {exc}", err=True)
+                raise typer.Exit(2)
             except httpx.HTTPError as exc:
                 typer.echo(f"Network error downloading {req_id}: {exc}", err=True)
                 raise typer.Exit(2)
