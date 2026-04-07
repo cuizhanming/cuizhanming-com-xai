@@ -28,6 +28,8 @@ Or save it permanently:
 xai config set api_key your-key-here
 ```
 
+Pass `--api-key` to any command to override the configured key for that invocation.
+
 ---
 
 ## Image generation
@@ -42,7 +44,14 @@ xai image generate "a red fox in a snowy forest"
 Image URL: https://...
 ```
 
-Optional flags: `--n 1–10`, `--aspect-ratio 16:9`, `--resolution 1k|2k`, `--save path.png`, `--output text|json`.
+| Flag | Description |
+|---|---|
+| `--n 1–10` | Number of images to generate (default: 1) |
+| `--aspect-ratio 16:9` | Aspect ratio (e.g. `16:9`, `1:1`, `9:16`) |
+| `--resolution 1k\|2k` | Output resolution |
+| `--save path.png` | Save image(s) locally (suffix becomes prefix when `--n > 1`) |
+| `--output text\|json` | Output format (default: `text` on TTY, `json` otherwise) |
+| `--api-key KEY` | Override `XAI_API_KEY` for this call |
 
 ```bash
 # Generate 4 variations and save them
@@ -56,13 +65,20 @@ xai image generate "abstract watercolor" --n 4 --save output.png
 xai image edit "make it look like a watercolor painting" --image photo.jpg
 ```
 
-Pass up to 5 source images with repeated `--image` flags:
+`--image` accepts a file path, an HTTPS URL, or a folder. Passing a folder edits every image inside it in one shot.
 
 ```bash
-xai image edit "blend these together" --image img1.png --image img2.png
+# Edit all images in a folder and save results
+xai image edit "oil painting style" --image ~/photos --save ./edited
 ```
 
-Optional flags: `--aspect-ratio`, `--save path.png`, `--output text|json`.
+| Flag | Description |
+|---|---|
+| `--image PATH\|URL\|DIR` | Source image (required) |
+| `--aspect-ratio 16:9` | Output aspect ratio |
+| `--save PATH\|DIR` | Save path (file for single image, folder for directory input) |
+| `--output text\|json` | Output format |
+| `--api-key KEY` | Override `XAI_API_KEY` for this call |
 
 ### Batch image generation
 
@@ -78,7 +94,7 @@ Batch ID: batch-xyz
 ```
 
 ```bash
-# Or wait for completion
+# Wait for completion
 xai image batch submit "a red apple" "a blue ocean" --wait
 ```
 
@@ -105,7 +121,7 @@ Cancelled:   0
 # Fetch result URLs
 xai image batch results batch-xyz
 
-# Or download all images
+# Download all images
 xai image batch results batch-xyz --save-dir ./images
 ```
 
@@ -133,7 +149,18 @@ Supply one prompt per image to use different prompts for each:
 xai image batch submit --image ~/photos "warm tones" "cool tones" "black and white"
 ```
 
-Optional flags: `--aspect-ratio`, `--name`, `--wait`, `--save-dir`, `--output text|json`.
+#### `xai image batch submit` flags
+
+| Flag | Description |
+|---|---|
+| `--image DIR` | Folder of images for image-to-image editing |
+| `--aspect-ratio 16:9` | Output aspect ratio |
+| `--resolution 1k\|2k` | Resolution (generation-only, ignored in edit mode) |
+| `--name TEXT` | Optional batch name |
+| `--wait` | Poll until batch completes before returning |
+| `--save-dir DIR` | Download results to folder (implies `--wait`) |
+| `--output text\|json` | Output format |
+| `--api-key KEY` | Override `XAI_API_KEY` for this call |
 
 ---
 
@@ -149,11 +176,23 @@ xai video generate "a red fox running through a snowy forest"
 Video URL: https://...
 ```
 
-Optional flags: `--image path/or/url`, `--model`, `--duration`, `--aspect-ratio`, `--resolution`, `--timeout`.
-
-Add `--output json` for machine-readable output:
+| Flag | Description |
+|---|---|
+| `--image PATH\|URL` | Reference image (path or HTTPS URL) |
+| `--model ID` | Model ID (default: `grok-imagine-video`) |
+| `--duration SEC` | Duration in seconds |
+| `--aspect-ratio 16:9` | Aspect ratio |
+| `--resolution 1080p` | Resolution |
+| `--timeout SEC` | Polling timeout in seconds (default: 600) |
+| `--save PATH\|DIR` | Download video locally after generation |
+| `--output text\|json` | Output format (default: `text` on TTY, `json` otherwise) |
+| `--api-key KEY` | Override `XAI_API_KEY` for this call |
 
 ```bash
+# Generate and save directly
+xai video generate "timelapse of clouds" --save clouds.mp4
+
+# Machine-readable output
 xai video generate "timelapse of clouds over a mountain" --output json
 ```
 
@@ -161,11 +200,19 @@ xai video generate "timelapse of clouds over a mountain" --output json
 {"id": "req_abc123", "status": "done", "url": "https://..."}
 ```
 
+When `--save` is used, the video is deleted from the server after a successful download.
+
 ### Check status
 
 ```bash
 xai video status req_abc123
+xai video status req_abc123 --output json
 ```
+
+| Flag | Description |
+|---|---|
+| `--output text\|json` | Output format |
+| `--api-key KEY` | Override `XAI_API_KEY` for this call |
 
 ### Download a completed video
 
@@ -173,6 +220,11 @@ xai video status req_abc123
 xai video download req_abc123
 xai video download req_abc123 --output fox-in-snow.mp4
 ```
+
+| Flag | Description |
+|---|---|
+| `--output PATH` | Destination file path (default: `<request_id>.mp4`) |
+| `--api-key KEY` | Override `XAI_API_KEY` for this call |
 
 ---
 
@@ -183,6 +235,8 @@ xai config set api_key your-key-here
 xai config set timeout 300
 xai config show
 ```
+
+Config is stored at `~/.config/xai/config.toml`. The `XAI_API_KEY` environment variable takes precedence over the stored key.
 
 ---
 
