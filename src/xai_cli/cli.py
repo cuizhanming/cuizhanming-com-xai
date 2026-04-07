@@ -788,7 +788,15 @@ def image_batch_submit(
             typer.echo(str(exc), err=True)
             raise typer.Exit(2)
 
-        succeeded = [r for r in all_results if "batch_result" in r]
+        succeeded = [
+            r for r in all_results
+            if "batch_result" in r and "response" in r["batch_result"]
+        ]
+        failed = [r for r in all_results if "batch_result" not in r or "error" in r["batch_result"]]
+        if failed:
+            for r in failed:
+                err_msg = r.get("batch_result", {}).get("error") or "unknown error"
+                typer.echo(f"Warning: request {r.get('batch_request_id')} failed: {err_msg}", err=True)
         dest_dir = Path(save_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
         saved_paths: list[str] = []
@@ -910,7 +918,15 @@ def image_batch_results(
         typer.echo(str(exc), err=True)
         raise typer.Exit(2)
 
-    succeeded = [r for r in all_results if "batch_result" in r]
+    succeeded = [
+        r for r in all_results
+        if "batch_result" in r and "response" in r["batch_result"]
+    ]
+    failed = [r for r in all_results if "batch_result" not in r or "error" in r["batch_result"]]
+    if failed:
+        for r in failed:
+            err_msg = r.get("batch_result", {}).get("error") or "unknown error"
+            typer.echo(f"Warning: request {r.get('batch_request_id')} failed: {err_msg}", err=True)
 
     def _get_image_url(r: dict) -> str:
         return r["batch_result"]["response"]["image_generation"]["data"][0]["url"]
