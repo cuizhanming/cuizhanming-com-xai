@@ -381,42 +381,90 @@ def image_generate(
 # ---------------------------------------------------------------------------
 
 
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _collect_image_paths(value: str) -> list[Path]:
+    """Return a list of image Paths from a file path, HTTPS URL, or directory."""
+    p = Path(value)
+    if p.is_dir():
+        paths = sorted(
+            f for f in p.iterdir() if f.is_file() and f.suffix.lower() in _IMAGE_EXTENSIONS
+        )
+        if not paths:
+            raise ValueError(f"No supported images found in {value} (accepted: jpg, jpeg, png, webp)")
+        return paths
+    return [p]
+
+
 @image_app.command("edit")
 def image_edit(
     prompt: str = typer.Argument(..., help="Editing instructions"),
-    image: list[str] = typer.Option(..., "--image", help="Image path or HTTPS URL (repeat for up to 5)"),
+    image: str = typer.Option(..., "--image", help="Image path, HTTPS URL, or folder of images"),
     aspect_ratio: Optional[str] = typer.Option(None, "--aspect-ratio", help="e.g. 16:9, 1:1"),
     output: Optional[str] = typer.Option(None, "--output", help="Output format: text or json"),
-    save: Optional[str] = typer.Option(None, "--save", help="Save result to this path"),
+    save: Optional[str] = typer.Option(None, "--save", help="Save path or folder (for batch)"),
     api_key: Optional[str] = typer.Option(None, "--api-key", envvar="XAI_API_KEY"),
 ) -> None:
-    """Edit an image using a text prompt (image-to-image)."""
+    """Edit an image using a text prompt (image-to-image). Pass a folder to batch-edit all images inside."""
     resolved_key = load_api_key(api_key)
     out_format = _resolve_output(output)
     err_console = _stderr_console()
 
-    # Pre-flight: resolve each image input before any network call
-    resolved: list[str] = []
-    for img_path in image:
+    # Collect source paths (single file, URL, or folder)
+    try:
+        source_paths = _collect_image_paths(image)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    is_batch = len(source_paths) > 1 or (not image.startswith("https://") and Path(image).is_dir())
+
+    # Pre-flight: resolve all inputs before any network call
+    resolved: list[tuple[Path, str]] = []  # (original_path, resolved_data)
+    for src in source_paths:
         try:
-            resolved.append(prepare_image_input(img_path))
+            resolved.append((src, prepare_image_input(str(src))))
         except (ValueError, FileNotFoundError, PermissionError) as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1)
 
-    use_spinner = sys.stderr.isatty() and not _NO_COLOR
-    spinner_status = err_console.status("Editing image...") if use_spinner else None
+    # Validate --save is a folder when batch
+    save_dir: Path | None = None
+    save_file: Path | None = None
+    if save is not None:
+        save_path = Path(save)
+        if is_batch:
+            save_dir = save_path
+            save_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            save_file = save_path if save_path.suffix else Path(f"{save_path.stem}.png")
 
-    data: list[dict] = []
+    use_spinner = sys.stderr.isatty() and not _NO_COLOR and not is_batch
+
+    # results: list of (original_stem, url)
+    results: list[tuple[str, str]] = []
 
     async def _run() -> None:
-        nonlocal data
         async with XAIClient(resolved_key) as client:
-            data = await client.edit_image(
-                prompt=prompt,
-                images=resolved,
-                aspect_ratio=aspect_ratio,
-            )
+            async def _edit_one(stem: str, data: str) -> tuple[str, str]:
+                items = await client.edit_image(
+                    prompt=prompt,
+                    image=data,
+                    aspect_ratio=aspect_ratio,
+                )
+                return stem, items[0].get("url", "")
+
+            tasks = [
+                _edit_one(src.stem, data)
+                for src, data in resolved
+            ]
+            gathered = await asyncio.gather(*tasks)
+            results.extend(gathered)
+
+    spinner_status = err_console.status(
+        f"Editing {len(resolved)} image{'s' if len(resolved) > 1 else ''}..."
+    ) if use_spinner or is_batch else None
 
     try:
         if spinner_status:
@@ -424,10 +472,6 @@ def image_edit(
                 asyncio.run(_run())
         else:
             asyncio.run(_run())
-    except ValueError as exc:
-        # edit_image raises ValueError when image count is 0 or >5
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(1)
     except XAIAuthError:
         typer.echo("Authentication failed — check XAI_API_KEY", err=True)
         raise typer.Exit(2)
@@ -438,39 +482,43 @@ def image_edit(
         typer.echo(str(exc), err=True)
         raise typer.Exit(2)
 
-    # Result is always a single edited image
-    img = data[0]
-    url = img.get("url", "")
-
-    if save is None:
-        if out_format == "json":
-            typer.echo(json.dumps({"images": [{"index": 0, "url": url}]}))
-        else:
-            typer.echo(f"Image URL: {url}")
-    else:
-        save_path = Path(save)
-        dest = save_path if save_path.suffix else Path(f"{save_path.stem}.png")
-
-        use_status = sys.stderr.isatty() and not _NO_COLOR
-        dl_status = err_console.status(f"Saving {dest.name}...") if use_status else None
-        try:
-            if dl_status:
-                with dl_status:
-                    response = httpx.get(url, follow_redirects=True)
-                    response.raise_for_status()
-                    dest.write_bytes(response.content)
-            else:
+    # Output / save
+    if save_dir is not None:
+        saved: list[str] = []
+        for stem, url in results:
+            dest = save_dir / f"edited_{stem}.png"
+            try:
                 response = httpx.get(url, follow_redirects=True)
                 response.raise_for_status()
                 dest.write_bytes(response.content)
+                saved.append(str(dest))
+            except httpx.HTTPError as exc:
+                typer.echo(f"Network error downloading {stem}: {exc}", err=True)
+                raise typer.Exit(2)
+        if out_format == "json":
+            typer.echo(json.dumps({"saved": saved}))
+        else:
+            for path in saved:
+                typer.echo(f"Saved to {path}")
+    elif save_file is not None:
+        _, url = results[0]
+        try:
+            response = httpx.get(url, follow_redirects=True)
+            response.raise_for_status()
+            save_file.write_bytes(response.content)
         except httpx.HTTPError as exc:
             typer.echo(f"Network error downloading image: {exc}", err=True)
             raise typer.Exit(2)
-
         if out_format == "json":
-            typer.echo(json.dumps({"saved": [str(dest)]}))
+            typer.echo(json.dumps({"saved": [str(save_file)]}))
         else:
-            typer.echo(f"Saved to {dest}")
+            typer.echo(f"Saved to {save_file}")
+    else:
+        if out_format == "json":
+            typer.echo(json.dumps({"images": [{"index": i, "url": url} for i, (_, url) in enumerate(results)]}))
+        else:
+            for _, url in results:
+                typer.echo(f"Image URL: {url}")
 
 
 # ---------------------------------------------------------------------------

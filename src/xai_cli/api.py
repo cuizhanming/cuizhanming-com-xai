@@ -186,23 +186,14 @@ class XAIClient:
     async def edit_image(
         self,
         prompt: str,
-        images: list[str],
+        image: str,
         model: str = "grok-imagine-image",
         aspect_ratio: str | None = None,
-        response_format: str = "url",
     ) -> list[dict]:
-        if not (1 <= len(images) <= 5):
-            raise ValueError(f"images must contain 1–5 items; got {len(images)}")
-
-        image_entries = [
-            {"type": "image_url", "image_url": {"url": img}} for img in images
-        ]
-
         body: dict = {
             "model": model,
             "prompt": prompt,
-            "image": image_entries,
-            "response_format": response_format,
+            "image": {"type": "image_url", "url": image},
         }
         if aspect_ratio is not None:
             body["aspect_ratio"] = aspect_ratio
