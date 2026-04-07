@@ -105,12 +105,19 @@ class XAIClient:
         resp = await self._request_with_server_retry("POST", "/videos/generations", json=body)
         self._raise_for_status(resp)
         data = resp.json()
-        return data["id"]
+        return data.get("id") or data["request_id"]
 
     async def get_video_status(self, request_id: str) -> dict:
         resp = await self._get_with_server_retry(f"/videos/{request_id}")
         self._raise_for_status(resp)
         return resp.json()
+
+    async def delete_video(self, request_id: str) -> None:
+        """Delete a video generation from the xAI server. Silently ignores 404."""
+        resp = await self._request_with_server_retry("DELETE", f"/videos/{request_id}")
+        if resp.status_code == 404:
+            return
+        self._raise_for_status(resp)
 
     async def poll_video(
         self,

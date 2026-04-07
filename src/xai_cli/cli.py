@@ -82,6 +82,7 @@ def video_generate(
     resolution: Optional[str] = typer.Option(None, "--resolution", help="Resolution e.g. 1080p"),
     timeout: float = typer.Option(600.0, "--timeout", help="Polling timeout in seconds"),
     output: Optional[str] = typer.Option(None, "--output", help="Output format: text or json"),
+    save: Optional[str] = typer.Option(None, "--save", help="Download video to this file or directory"),
     api_key: Optional[str] = typer.Option(None, "--api-key", envvar="XAI_API_KEY", help="xAI API key"),
     # Phase 2 placeholder — --reference-images is mutually exclusive with --image
     reference_images: bool = typer.Option(False, "--reference-images", hidden=True),
@@ -149,11 +150,61 @@ def video_generate(
         typer.echo(str(exc), err=True)
         raise typer.Exit(2)
 
-    url = result.get("url", "")
-    if out_format == "json":
-        typer.echo(json.dumps({"id": request_id, "status": "done", "url": url}))
+    url = (result.get("video") or {}).get("url", "")
+
+    if save is not None:
+        save_path = Path(save).expanduser()
+        if save_path.is_dir():
+            save_path = save_path / f"{request_id}.mp4"
+        elif not save_path.suffix:
+            save_path = save_path.with_suffix(".mp4")
+
+        use_progress = sys.stderr.isatty() and not _NO_COLOR
+        try:
+            with httpx.stream("GET", url, follow_redirects=True) as response:
+                response.raise_for_status()
+                total = int(response.headers.get("content-length", 0)) or None
+                if use_progress:
+                    progress = Progress(
+                        "[progress.description]{task.description}",
+                        BarColumn(),
+                        DownloadColumn(),
+                        TransferSpeedColumn(),
+                        console=err_console,
+                    )
+                    task = progress.add_task(f"Downloading {save_path.name}", total=total)
+                    with progress:
+                        with save_path.open("wb") as fh:
+                            for chunk in response.iter_bytes(chunk_size=65536):
+                                fh.write(chunk)
+                                progress.update(task, advance=len(chunk))
+                else:
+                    with save_path.open("wb") as fh:
+                        for chunk in response.iter_bytes(chunk_size=65536):
+                            fh.write(chunk)
+        except httpx.HTTPError as exc:
+            typer.echo(f"Network error downloading video: {exc}", err=True)
+            raise typer.Exit(2)
+
+        # Delete from server after successful download
+        async def _delete() -> None:
+            async with XAIClient(resolved_key) as client:
+                await client.delete_video(request_id)
+
+        try:
+            asyncio.run(_delete())
+        except Exception as exc:
+            typer.echo(f"Warning: could not delete video from server: {exc}", err=True)
+
+        if out_format == "json":
+            typer.echo(json.dumps({"id": request_id, "status": "done", "url": url, "saved_to": str(save_path)}))
+        else:
+            typer.echo(f"Saved to {save_path}")
     else:
-        typer.echo(f"Video URL: {url}")
+        if out_format == "json":
+            typer.echo(json.dumps({"id": request_id, "status": "done", "url": url}))
+        else:
+            typer.echo(f"Video URL: {url}")
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +236,7 @@ def video_status(
         raise typer.Exit(2)
 
     status = data.get("status", "unknown")
-    url = data.get("url") or None
+    url = (data.get("video") or {}).get("url") or None
 
     if out_format == "json":
         typer.echo(json.dumps({"id": request_id, "status": status, "url": url}))
@@ -228,7 +279,7 @@ def video_download(
         typer.echo(f"Generation not yet complete (status: {status})", err=True)
         raise typer.Exit(1)
 
-    url = data.get("url", "")
+    url = (data.get("video") or {}).get("url", "")
     err_console = _stderr_console()
 
     try:
