@@ -803,7 +803,9 @@ def image_batch_submit(
 
         for r in succeeded:
             req_id = r["batch_request_id"]
-            url = r["batch_result"]["response"]["image_generation"]["data"][0]["url"]
+            item = r["batch_result"]["response"]["image_generation"]["data"][0]
+            url: str | None = item.get("url")
+            b64_bytes: bytes | None = base64.b64decode(item["b64_json"]) if "b64_json" in item else None
             # Use original filename stem when editing a folder
             if image_paths:
                 idx = int(req_id.split("-", 1)[1])
@@ -811,6 +813,18 @@ def image_batch_submit(
             else:
                 stem = req_id
             dest = dest_dir / f"{stem}.png"
+
+            if b64_bytes is not None:
+                dest.write_bytes(b64_bytes)
+                saved_paths.append(str(dest))
+                if out_format != "json":
+                    typer.echo(f"Saved to {dest}")
+                continue
+
+            if url is None:
+                typer.echo(f"Skipped {req_id} (no url or b64_json in response)", err=True)
+                continue
+
             dl_status = err_console.status(f"Downloading {dest.name}...") if use_spinner else None
             try:
                 if dl_status:
@@ -928,22 +942,31 @@ def image_batch_results(
             err_msg = r.get("batch_result", {}).get("error") or "unknown error"
             typer.echo(f"Warning: request {r.get('batch_request_id')} failed: {err_msg}", err=True)
 
-    def _get_image_url(r: dict) -> str:
-        return r["batch_result"]["response"]["image_generation"]["data"][0]["url"]
+    def _get_image_data(r: dict) -> tuple[str | None, bytes | None]:
+        item = r["batch_result"]["response"]["image_generation"]["data"][0]
+        if "url" in item:
+            return item["url"], None
+        if "b64_json" in item:
+            return None, base64.b64decode(item["b64_json"])
+        return None, None
 
     if save_dir is None:
         if out_format == "json":
-            payload = [
-                {
-                    "id": r["batch_request_id"],
-                    "url": _get_image_url(r),
-                }
-                for r in succeeded
-            ]
+            payload = []
+            for r in succeeded:
+                url, _ = _get_image_data(r)
+                entry: dict = {"id": r["batch_request_id"]}
+                if url:
+                    entry["url"] = url
+                else:
+                    entry["url"] = None
+                payload.append(entry)
             typer.echo(json.dumps({"results": payload}))
         else:
             for r in succeeded:
-                typer.echo(f"{r['batch_request_id']}: {_get_image_url(r)}")
+                url, _ = _get_image_data(r)
+                label = url if url else "(b64_json — use --save to download)"
+                typer.echo(f"{r['batch_request_id']}: {label}")
     else:
         dest_dir = Path(save_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -953,8 +976,19 @@ def image_batch_results(
 
         for r in succeeded:
             req_id = r["batch_request_id"]
-            url = _get_image_url(r)
+            url, b64_bytes = _get_image_data(r)
             dest = dest_dir / f"{req_id}.png"
+
+            if b64_bytes is not None:
+                dest.write_bytes(b64_bytes)
+                saved_paths.append(str(dest))
+                if out_format != "json":
+                    typer.echo(f"Saved to {dest}")
+                continue
+
+            if url is None:
+                typer.echo(f"Skipped {req_id} (no url or b64_json in response)", err=True)
+                continue
 
             dl_status = err_console.status(f"Downloading {req_id}.png...") if use_spinner else None
             try:
